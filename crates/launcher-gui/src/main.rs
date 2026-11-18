@@ -12,4 +12,3 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| Ok(Box::new(LauncherApp::default()))),
     )
 }
-

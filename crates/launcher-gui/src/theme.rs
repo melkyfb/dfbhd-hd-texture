@@ -1,7 +1,6 @@
 use eframe::egui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct VaultPalette {
     pub bg: egui::Color32,
     pub panel: egui::Color32,
@@ -26,12 +25,10 @@ impl Default for VaultPalette {
     }
 }
 
-#[allow(dead_code)]
 pub fn palette() -> VaultPalette {
     VaultPalette::default()
 }
 
-#[allow(dead_code)]
 pub fn apply_vault_theme(ctx: &egui::Context) {
     let p = palette();
     let mut visuals = egui::Visuals::dark();

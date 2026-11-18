@@ -1,5 +1,4 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum View {
     Dashboard,
     Dfbhd,
@@ -123,7 +122,6 @@ impl LauncherState {
         );
     }
 
-    #[allow(dead_code)]
     pub fn scan_attach_stub(&mut self) {
         let Some(game) = self.selected_game_mut() else {
             return;
@@ -138,16 +136,9 @@ impl LauncherState {
         let Some(game) = self.selected_game_mut() else {
             return;
         };
-        if !game.source_linked {
-            push_log(
-                &mut game.log,
-                "launch blocked: attach/scan and link game source first".to_string(),
-            );
-            return;
-        }
         push_log(
             &mut game.log,
-            "launch stub: source linked (no real launch in Etapa 1)".to_string(),
+            "launch blocked: attach/scan and link game source first".to_string(),
         );
     }
 }
@@ -191,5 +182,53 @@ mod tests {
         assert!(g.log.len() >= before);
         let last = g.log.last().unwrap().to_lowercase();
         assert!(last.contains("attach") || last.contains("scan") || last.contains("link"));
+    }
+
+    #[test]
+    fn log_is_bounded_to_cap_after_repeated_pushes() {
+        let mut s = LauncherState::default();
+        for _ in 0..(LOG_CAP + 20) {
+            s.apply_profile_stub();
+        }
+        let g = s.selected_game().unwrap();
+        assert_eq!(g.log.len(), LOG_CAP);
+        let last = g.log.last().unwrap();
+        assert!(last.contains("apply profile stub"));
+        assert!(!g.log.iter().any(|l| l == "awaiting game link..."));
+    }
+
+    #[test]
+    fn selecting_unknown_profile_is_noop() {
+        let mut s = LauncherState::default();
+        let before = s.selected_game().unwrap().active_profile_id.clone();
+        s.select_profile("does_not_exist");
+        assert_eq!(s.selected_game().unwrap().active_profile_id, before);
+    }
+
+    #[test]
+    fn stub_methods_safe_on_empty_and_unselected_state() {
+        let mut empty = LauncherState {
+            games: vec![],
+            selected_game_idx: 0,
+            view: View::Dashboard,
+        };
+        assert!(empty.selected_game().is_none());
+        empty.select_profile("x");
+        empty.apply_profile_stub();
+        empty.scan_attach_stub();
+        empty.launch_stub();
+        assert!(empty.selected_game().is_none());
+
+        let mut oob = LauncherState {
+            games: LauncherState::default().games,
+            selected_game_idx: 99,
+            view: View::Dashboard,
+        };
+        assert!(oob.selected_game().is_none());
+        oob.select_profile("x");
+        oob.apply_profile_stub();
+        oob.scan_attach_stub();
+        oob.launch_stub();
+        assert!(oob.selected_game().is_none());
     }
 }

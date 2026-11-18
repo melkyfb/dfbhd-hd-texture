@@ -123,9 +123,13 @@ impl LauncherApp {
                     .monospace(),
             );
             let active = if game.active_profile_id.is_empty() {
-                "-"
+                "-".to_string()
             } else {
-                &game.active_profile_id
+                game.profiles
+                    .iter()
+                    .find(|p| p.id == game.active_profile_id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| game.active_profile_id.clone())
             };
             ui.label(
                 egui::RichText::new(format!("ACTIVE PROFILE: {active}"))
