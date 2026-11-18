@@ -1,0 +1,2 @@
+/[[:space:]]assets/profiles/dfbhd/hd_textures/*.pff filter=lfs diff=lfs merge=lfs -text
+assets/profiles/dfbhd/hd_textures/*.pff filter=lfs diff=lfs merge=lfs -text
