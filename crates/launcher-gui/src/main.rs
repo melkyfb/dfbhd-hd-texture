@@ -1,3 +1,5 @@
+mod model;
+
 use eframe::egui;
 
 #[derive(Default)]
