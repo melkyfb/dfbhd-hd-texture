@@ -1,6 +1,6 @@
 # DFBHD Texture Launcher (Etapa 1)
 
-A personal/portfolio native GUI launcher foundation for **Delta Force: Black Hawk Down (DFBHD)** textures and mods, designed as a base that can grow to support multiple games. The visual identity is inspired by a dark **"secure vault / terminal"** aesthetic.
+A personal/portfolio native GUI launcher foundation for **Delta Force: Black Hawk Down (DFBHD)** textures and mods, designed as a base that can grow to support multiple games. The visual identity is a **melky.tech-inspired** dark **"secure vault / terminal"** aesthetic.
 
 ## Etapa 1 scope (current)
 
