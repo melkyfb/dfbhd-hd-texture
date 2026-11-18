@@ -1,4 +1,5 @@
 mod model;
+mod theme;
 
 use eframe::egui;
 
