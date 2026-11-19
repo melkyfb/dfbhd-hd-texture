@@ -631,155 +631,253 @@ impl LauncherState {
         }
     }
 
+    fn restore_dfbhd_pff_asset_original(
+        &mut self,
+        idx: usize,
+        install: &Path,
+        asset_name: &str,
+        missing_backup_is_ok: bool,
+    ) -> bool {
+        let target = install.join(asset_name);
+        let original_backup = install.join(format!("{asset_name}.original"));
+        let bak = install.join(format!("{asset_name}.bak"));
+
+        let source = if original_backup.exists() {
+            Some((original_backup.clone(), format!("{asset_name}.original")))
+        } else if bak.exists() {
+            Some((bak.clone(), format!("{asset_name}.bak")))
+        } else {
+            None
+        };
+
+        match source {
+            Some((src, label)) => match std::fs::copy(&src, &target) {
+                Ok(_) => {
+                    push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "restored original {} from '{}' to '{}'",
+                            asset_name,
+                            src.display(),
+                            target.display()
+                        ),
+                    );
+                    true
+                }
+                Err(e) => {
+                    push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply failed: could not restore original {} from '{}': {}",
+                            asset_name, label, e
+                        ),
+                    );
+                    false
+                }
+            },
+            None => {
+                if missing_backup_is_ok {
+                    push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply: no {} original backup found to restore (expected {}.original or {}.bak); continuing",
+                            asset_name, asset_name, asset_name
+                        ),
+                    );
+                    true
+                } else {
+                    push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply failed: no original backup found to restore {} (expected {}.original or {}.bak)",
+                            asset_name, asset_name, asset_name
+                        ),
+                    );
+                    false
+                }
+            }
+        }
+    }
+
+    fn apply_dfbhd_pff_asset_hd(
+        &mut self,
+        idx: usize,
+        install: &Path,
+        asset_name: &str,
+        hd_pack_path: &str,
+    ) -> bool {
+        let pack = Path::new(hd_pack_path);
+        if !pack.is_file() {
+            if asset_name == "localres.pff" {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "profile apply failed: HD textures pack not found at '{}'",
+                        hd_pack_path
+                    ),
+                );
+            } else {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "profile apply failed: HD textures {} pack not found at '{}'",
+                        asset_name, hd_pack_path
+                    ),
+                );
+            }
+            return false;
+        }
+
+        let target = install.join(asset_name);
+        let original_backup = install.join(format!("{asset_name}.original"));
+        let bak = install.join(format!("{asset_name}.bak"));
+
+        if !original_backup.exists() {
+            let backup_source = if bak.exists() {
+                Some((bak.clone(), format!("{asset_name}.bak")))
+            } else if target.exists() {
+                Some((target.clone(), asset_name.to_string()))
+            } else {
+                None
+            };
+            if let Some((src, label)) = backup_source {
+                match std::fs::copy(&src, &original_backup) {
+                    Ok(_) => push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "created original backup '{}' from '{}'",
+                            original_backup.display(),
+                            label
+                        ),
+                    ),
+                    Err(e) => {
+                        push_log(
+                            &mut self.games[idx].log,
+                            format!(
+                                "profile apply failed: could not create original backup for {} from '{}': {}",
+                                asset_name, label, e
+                            ),
+                        );
+                        return false;
+                    }
+                }
+            } else {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "profile apply failed: cannot apply HD textures because no {}, {}.bak, or {}.original was found to preserve as original",
+                        asset_name, asset_name, asset_name
+                    ),
+                );
+                return false;
+            }
+        }
+
+        match std::fs::copy(pack, &target) {
+            Ok(_) => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "applied HD textures: copied '{}' to '{}'",
+                        pack.display(),
+                        target.display()
+                    ),
+                );
+                true
+            }
+            Err(e) => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "profile apply failed: could not copy HD textures pack for {} to '{}': {}",
+                        asset_name,
+                        target.display(),
+                        e
+                    ),
+                );
+                false
+            }
+        }
+    }
+
     /// Returns `true` when the texture step succeeded; `false` when it was
-    /// skipped or failed (failure is logged via the game log).
+    /// skipped or failed (failure is logged via the game log). Compatibility
+    /// wrapper: manages `localres.pff` only (no `resource.pff` pack).
     pub fn apply_dfbhd_profile_with_pack_path(
         &mut self,
         profile_id: &str,
         install_dir: &str,
         hd_pack_path: &str,
     ) -> bool {
+        self.apply_dfbhd_profile_with_pack_paths(profile_id, install_dir, hd_pack_path, None)
+    }
+
+    /// Core texture apply/restore for `original`/`hd_textures` managing both
+    /// `localres.pff` and (when applicable) `resource.pff` with `*.original`
+    /// backups (one-time, never overwritten), clear per-asset logs, and wrapper
+    /// cleanup on `original`.
+    pub fn apply_dfbhd_profile_with_pack_paths(
+        &mut self,
+        profile_id: &str,
+        install_dir: &str,
+        hd_localres_pack_path: &str,
+        hd_resource_pack_path: Option<&str>,
+    ) -> bool {
         let Some(idx) = self.games.iter().position(|g| g.id == "dfbhd") else {
             return false;
         };
         let install = Path::new(install_dir);
-        let target = install.join("localres.pff");
-        let original_backup = install.join("localres.pff.original");
-        let bak = install.join("localres.pff.bak");
 
         match profile_id {
             "original" => {
-                let source = if original_backup.exists() {
-                    Some((original_backup.clone(), "localres.pff.original"))
-                } else if bak.exists() {
-                    Some((bak.clone(), "localres.pff.bak"))
-                } else {
-                    None
-                };
-                let copied = match source {
-                    Some((src, label)) => match std::fs::copy(&src, &target) {
-                        Ok(_) => {
+                let localres_ok = self.restore_dfbhd_pff_asset_original(
+                    idx,
+                    install,
+                    "localres.pff",
+                    false,
+                );
+                let resource_ok = self.restore_dfbhd_pff_asset_original(
+                    idx,
+                    install,
+                    "resource.pff",
+                    true,
+                );
+                // Idempotent wrapper cleanup: runs even when texture restore
+                // could not, so the install returns to a non-wrapper state when
+                // possible.
+                let wrapper_ok =
+                    match restore_dfbhd_wrapper_in_install(install, &mut self.games[idx].log) {
+                        Ok(()) => {
                             push_log(
                                 &mut self.games[idx].log,
-                                format!(
-                                    "restored original localres.pff from '{}' to '{}'",
-                                    src.display(),
-                                    target.display()
-                                ),
+                                "profile apply: wrapper cleanup done".to_string(),
                             );
                             true
                         }
                         Err(e) => {
                             push_log(
                                 &mut self.games[idx].log,
-                                format!(
-                                    "profile apply failed: could not restore original from '{}': {}",
-                                    label, e
-                                ),
+                                format!("profile apply: wrapper cleanup failed: {e}"),
                             );
                             false
                         }
-                    },
-                    None => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            "profile apply failed: no original backup found to restore (expected localres.pff.original or localres.pff.bak)"
-                                .to_string(),
-                        );
-                        false
-                    }
-                };
-                // Idempotent wrapper cleanup: runs even when the texture
-                // restore above could not, so the install returns to a
-                // non-wrapper state when possible.
-                match restore_dfbhd_wrapper_in_install(install, &mut self.games[idx].log) {
-                    Ok(()) => push_log(
-                        &mut self.games[idx].log,
-                        "profile apply: wrapper cleanup done".to_string(),
-                    ),
-                    Err(e) => push_log(
-                        &mut self.games[idx].log,
-                        format!("profile apply: wrapper cleanup failed: {e}"),
-                    ),
-                }
-                copied
+                    };
+                localres_ok && resource_ok && wrapper_ok
             }
             "hd_textures" => {
-                let pack = Path::new(hd_pack_path);
-                if !pack.is_file() {
-                    push_log(
-                        &mut self.games[idx].log,
-                        format!(
-                            "profile apply failed: HD textures pack not found at '{}'",
-                            hd_pack_path
-                        ),
-                    );
-                    return false;
-                }
-
-                if !original_backup.exists() {
-                    let backup_source = if bak.exists() {
-                        Some((bak.clone(), "localres.pff.bak"))
-                    } else if target.exists() {
-                        Some((target.clone(), "localres.pff"))
-                    } else {
-                        None
-                    };
-                    if let Some((src, label)) = backup_source {
-                        match std::fs::copy(&src, &original_backup) {
-                            Ok(_) => push_log(
-                                &mut self.games[idx].log,
-                                format!(
-                                    "created original backup '{}' from '{}'",
-                                    original_backup.display(),
-                                    label
-                                ),
-                            ),
-                            Err(e) => {
-                                push_log(
-                                    &mut self.games[idx].log,
-                                    format!(
-                                        "profile apply failed: could not create original backup from '{}': {}",
-                                        label, e
-                                    ),
-                                );
-                                return false;
-                            }
-                        }
-                    } else {
-                        push_log(
-                            &mut self.games[idx].log,
-                            "profile apply failed: cannot apply HD textures because no localres.pff, localres.pff.bak, or localres.pff.original was found to preserve as original"
-                                .to_string(),
-                        );
-                        return false;
+                let localres_ok = self.apply_dfbhd_pff_asset_hd(
+                    idx,
+                    install,
+                    "localres.pff",
+                    hd_localres_pack_path,
+                );
+                let resource_ok = match hd_resource_pack_path {
+                    Some(rpack) => {
+                        self.apply_dfbhd_pff_asset_hd(idx, install, "resource.pff", rpack)
                     }
-                }
-
-                match std::fs::copy(pack, &target) {
-                    Ok(_) => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            format!(
-                                "applied HD textures profile: copied '{}' to '{}'",
-                                pack.display(),
-                                target.display()
-                            ),
-                        );
-                        true
-                    }
-                    Err(e) => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            format!(
-                                "profile apply failed: could not copy HD textures pack to '{}': {}",
-                                target.display(),
-                                e
-                            ),
-                        );
-                        false
-                    }
-                }
+                    None => true,
+                };
+                localres_ok && resource_ok
             }
             _ => {
                 push_log(
@@ -791,25 +889,47 @@ impl LauncherState {
         }
     }
 
-    /// Combined "HD Widescreen (1080p)" apply: HD textures via the existing
-    /// safe `localres.pff` swap logic (preserving `localres.pff.original`),
-    /// then install/configure the widescreen wrapper from the bundled
-    /// `assets/wrapper/dfbhd_widescreen`. Explicit paths so tests do not
-    /// depend on executable/cwd bundle discovery. Failures are logged; a
-    /// wrapper-install failure does not report overall success.
+    /// Combined "HD Widescreen (1080p)" apply: HD textures via the safe PFF
+    /// swap logic (preserving `*.original` backups), then install/configure the
+    /// widescreen wrapper. Explicit paths so tests do not depend on
+    /// executable/cwd bundle discovery. Failures are logged; a wrapper-install
+    /// failure does not report overall success.
     pub fn apply_dfbhd_hd_widescreen_with_paths(
         &mut self,
         install_dir: &str,
         hd_pack_path: &str,
         wrapper_bundle_dir: &str,
     ) {
+        self.apply_dfbhd_hd_widescreen_with_all_paths(
+            install_dir,
+            hd_pack_path,
+            None,
+            wrapper_bundle_dir,
+        );
+    }
+
+    /// Combined "HD Widescreen (1080p)" apply managing both `localres.pff` and
+    /// (when provided) `resource.pff`, then installs/configures the widescreen
+    /// wrapper. Per-step logging; does not claim overall success if a required
+    /// step failed.
+    pub fn apply_dfbhd_hd_widescreen_with_all_paths(
+        &mut self,
+        install_dir: &str,
+        hd_localres_pack_path: &str,
+        hd_resource_pack_path: Option<&str>,
+        wrapper_bundle_dir: &str,
+    ) {
         let Some(idx) = self.games.iter().position(|g| g.id == "dfbhd") else {
             return;
         };
 
-        // Step 1: apply HD textures (existing behavior; logs failures).
-        let textures_ok =
-            self.apply_dfbhd_profile_with_pack_path("hd_textures", install_dir, hd_pack_path);
+        // Step 1: apply HD textures (localres required, resource when provided).
+        let textures_ok = self.apply_dfbhd_profile_with_pack_paths(
+            "hd_textures",
+            install_dir,
+            hd_localres_pack_path,
+            hd_resource_pack_path,
+        );
 
         // Step 2: install/configure the widescreen wrapper.
         match install_dfbhd_wrapper_to_install(
@@ -869,55 +989,100 @@ impl LauncherState {
 
         match active_profile_id.as_str() {
             "original" => {
-                self.apply_dfbhd_profile_with_pack_path("original", &install_dir, "");
+                self.apply_dfbhd_profile_with_pack_paths("original", &install_dir, "", None);
             }
-            "hd_textures" => match resolve_dfbhd_hd_localres_pack_path() {
-                Some(pack) => {
-                    self.apply_dfbhd_profile_with_pack_path(
-                        "hd_textures",
-                        &install_dir,
-                        &pack.to_string_lossy(),
-                    );
-                }
-                None => {
-                    push_log(
-                        &mut self.games[idx].log,
-                        "profile apply failed: HD textures pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory)"
-                            .to_string(),
-                    );
-                }
-            },
-            "hd_widescreen_1080p" => {
-                let pack = resolve_dfbhd_hd_localres_pack_path();
-                let bundle = resolve_dfbhd_wrapper_bundle_dir();
-                match (pack, bundle) {
-                    (Some(pack), Some(bundle)) => {
-                        self.apply_dfbhd_hd_widescreen_with_paths(
+            "hd_textures" => {
+                let localres_pack = resolve_dfbhd_hd_localres_pack_path();
+                let resource_pack = resolve_dfbhd_hd_resource_pack_path();
+                match localres_pack {
+                    Some(lpack) => {
+                        if resource_pack.is_none() {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply: HD resource.pff pack not found (expected assets/profiles/dfbhd/hd_textures/resource.pff relative to executable or current directory); applying localres textures only"
+                                    .to_string(),
+                            );
+                        }
+                        self.apply_dfbhd_profile_with_pack_paths(
+                            "hd_textures",
                             &install_dir,
-                            &pack.to_string_lossy(),
+                            &lpack.to_string_lossy(),
+                            resource_pack.as_ref().map(|p| p.to_string_lossy()).as_deref(),
+                        );
+                    }
+                    None => {
+                        push_log(
+                            &mut self.games[idx].log,
+                            "profile apply failed: HD textures pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            "hd_widescreen_1080p" => {
+                let localres_pack = resolve_dfbhd_hd_localres_pack_path();
+                let resource_pack = resolve_dfbhd_hd_resource_pack_path();
+                let bundle = resolve_dfbhd_wrapper_bundle_dir();
+                match (localres_pack, bundle) {
+                    (Some(lpack), Some(bundle)) => {
+                        if resource_pack.is_none() {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply: HD resource.pff pack not found (expected assets/profiles/dfbhd/hd_textures/resource.pff relative to executable or current directory); applying localres textures and wrapper"
+                                    .to_string(),
+                            );
+                        }
+                        self.apply_dfbhd_hd_widescreen_with_all_paths(
+                            &install_dir,
+                            &lpack.to_string_lossy(),
+                            resource_pack.as_ref().map(|p| p.to_string_lossy()).as_deref(),
                             &bundle.to_string_lossy(),
                         );
                     }
                     (None, Some(_)) => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            "profile apply failed: HD textures pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory); wrapper not installed"
-                                .to_string(),
-                        );
+                        if resource_pack.is_none() {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: HD textures localres.pff pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory); HD resource.pff pack not found (expected assets/profiles/dfbhd/hd_textures/resource.pff relative to executable or current directory); wrapper not installed"
+                                    .to_string(),
+                            );
+                        } else {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: HD textures localres.pff pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory); wrapper not installed (resource.pff pack was found but not applied)"
+                                    .to_string(),
+                            );
+                        }
                     }
                     (Some(_), None) => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            "profile apply failed: DFBHD widescreen wrapper bundle not found (expected assets/wrapper/dfbhd_widescreen relative to executable or current directory); wrapper not installed"
-                                .to_string(),
-                        );
+                        if resource_pack.is_none() {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: DFBHD widescreen wrapper bundle not found (expected assets/wrapper/dfbhd_widescreen relative to executable or current directory); wrapper not installed (HD resource.pff pack not found)"
+                                    .to_string(),
+                            );
+                        } else {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: DFBHD widescreen wrapper bundle not found (expected assets/wrapper/dfbhd_widescreen relative to executable or current directory); wrapper not installed"
+                                    .to_string(),
+                            );
+                        }
                     }
                     (None, None) => {
-                        push_log(
-                            &mut self.games[idx].log,
-                            "profile apply failed: HD textures pack and DFBHD widescreen wrapper bundle not found (expected assets/profiles/dfbhd/hd_textures/localres.pff and assets/wrapper/dfbhd_widescreen relative to executable or current directory); wrapper not installed"
-                                .to_string(),
-                        );
+                        if resource_pack.is_none() {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: HD textures localres.pff pack and DFBHD widescreen wrapper bundle not found (expected assets/profiles/dfbhd/hd_textures/localres.pff and assets/wrapper/dfbhd_widescreen relative to executable or current directory); HD resource.pff pack not found (expected assets/profiles/dfbhd/hd_textures/resource.pff relative to executable or current directory); wrapper not installed"
+                                    .to_string(),
+                            );
+                        } else {
+                            push_log(
+                                &mut self.games[idx].log,
+                                "profile apply failed: HD textures localres.pff pack and DFBHD widescreen wrapper bundle not found (expected assets/profiles/dfbhd/hd_textures/localres.pff and assets/wrapper/dfbhd_widescreen relative to executable or current directory); wrapper not installed (resource.pff pack was found but not applied)"
+                                    .to_string(),
+                            );
+                        }
                     }
                 }
             }
@@ -1452,6 +1617,61 @@ mod tests {
                 || g.log.join("\n").to_lowercase().contains("fail")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_hd_with_resource_creates_resource_backup_and_swaps() {
+        let install = unique_temp_dir("apply-hd-res");
+        write_file(&install.join("localres.pff"), b"ORIG-L");
+        write_file(&install.join("resource.pff"), b"ORIG-R");
+        let packs = unique_temp_dir("packs-hd-res");
+        let lpack = packs.join("localres.pff"); write_file(&lpack, b"HD-L");
+        let rpack = packs.join("resource.pff"); write_file(&rpack, b"HD-R");
+
+        let mut s = LauncherState::default();
+        let ok = s.apply_dfbhd_profile_with_pack_paths(
+            "hd_textures", &install.to_string_lossy(), &lpack.to_string_lossy(), Some(&rpack.to_string_lossy()),
+        );
+        assert!(ok);
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"HD-L");
+        assert_eq!(fs::read(install.join("resource.pff")).unwrap(), b"HD-R");
+        assert_eq!(fs::read(install.join("localres.pff.original")).unwrap(), b"ORIG-L");
+        assert_eq!(fs::read(install.join("resource.pff.original")).unwrap(), b"ORIG-R");
+        let _ = fs::remove_dir_all(&install); let _ = fs::remove_dir_all(&packs);
+    }
+
+    #[test]
+    fn apply_original_restores_resource_and_is_idempotent_without_resource_backup() {
+        let install = unique_temp_dir("apply-orig-res");
+        write_file(&install.join("localres.pff"), b"HD-L");
+        write_file(&install.join("localres.pff.original"), b"ORIG-L");
+        write_file(&install.join("resource.pff"), b"ORIG-R"); // no resource backup
+
+        let mut s = LauncherState::default();
+        let ok = s.apply_dfbhd_profile_with_pack_paths("original", &install.to_string_lossy(), "", None);
+        assert!(ok);
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"ORIG-L");
+        assert_eq!(fs::read(install.join("resource.pff")).unwrap(), b"ORIG-R");
+        let log_text = s.games.iter().find(|g| g.id=="dfbhd").unwrap().log.join("\n").to_lowercase();
+        assert!(log_text.contains("resource") || log_text.contains("no") || log_text.contains("backup"));
+        // idempotent
+        let ok2 = s.apply_dfbhd_profile_with_pack_paths("original", &install.to_string_lossy(), "", None);
+        assert!(ok2);
+        let _ = fs::remove_dir_all(&install);
+    }
+
+    #[test]
+    fn compat_wrappers_behave_as_before_without_resource_pack() {
+        let install = unique_temp_dir("compat-no-res");
+        write_file(&install.join("localres.pff"), b"ORIG-L");
+        let packs = unique_temp_dir("compat-packs");
+        let lpack = packs.join("localres.pff"); write_file(&lpack, b"HD-L");
+
+        let mut s = LauncherState::default();
+        assert!(s.apply_dfbhd_profile_with_pack_path("hd_textures", &install.to_string_lossy(), &lpack.to_string_lossy()));
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"HD-L");
+        assert!(!install.join("resource.pff.original").exists());
+        let _ = fs::remove_dir_all(&install); let _ = fs::remove_dir_all(&packs);
     }
 
     #[test]
