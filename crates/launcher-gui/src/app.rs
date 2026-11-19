@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use eframe::egui;
 
+use crate::config;
 use crate::model::{LauncherState, View};
 use crate::theme::{apply_vault_theme, palette};
 
@@ -16,6 +19,10 @@ impl Default for LauncherApp {
 }
 
 impl LauncherApp {
+    pub fn with_state(state: LauncherState) -> Self {
+        Self { state }
+    }
+
     fn draw_header(&mut self, ui: &mut egui::Ui) {
         let p = palette();
         egui::Panel::top("header").show(ui, |ui| {
@@ -195,9 +202,45 @@ impl LauncherApp {
             self.state.selected_game_idx = game_idx;
         }
 
-        let source_label = self.state.games[game_idx].source_label.clone();
+        let (source_linked, source_label, install_dir, exe_path, pff_paths) = {
+            let g = &self.state.games[game_idx];
+            (
+                g.source_linked,
+                g.source_label.clone(),
+                g.install_dir.clone(),
+                g.exe_path.clone(),
+                g.pff_paths.clone(),
+            )
+        };
+
+        let status = if source_linked { "[LINKED]" } else { "[UNLINKED]" };
         ui.label(
-            egui::RichText::new(format!("SOURCE: {source_label}"))
+            egui::RichText::new(format!("STATUS: {status}"))
+                .monospace()
+                .color(if source_linked { p.accent_alt } else { p.muted }),
+        );
+        ui.label(
+            egui::RichText::new(format!(
+                "INSTALL PATH: {}",
+                install_dir
+                    .as_deref()
+                    .unwrap_or(if source_linked { &source_label } else { "not linked" })
+            ))
+            .monospace()
+            .color(p.muted),
+        );
+        let exe_summary = match &exe_path {
+            Some(path) => format!("found ({path})"),
+            None => "not found".to_string(),
+        };
+        ui.label(
+            egui::RichText::new(format!("DFBHD.EXE: {exe_summary}"))
+                .monospace()
+                .color(p.muted),
+        );
+        let pff_names = Self::pff_names_hint(&pff_paths, 3);
+        ui.label(
+            egui::RichText::new(format!("PFF FILES: {} [{}]", pff_paths.len(), pff_names))
                 .monospace()
                 .color(p.muted),
         );
@@ -228,7 +271,27 @@ impl LauncherApp {
                 .button(egui::RichText::new("SCAN/ATTACH").monospace())
                 .clicked()
             {
-                self.state.scan_attach_stub();
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    let selected = folder.to_string_lossy().to_string();
+                    match self.state.link_game_folder("dfbhd", &selected) {
+                        Ok(()) => {
+                            if let Err(e) = config::save_config(&self.state.export_config()) {
+                                if let Some(g) =
+                                    self.state.games.iter_mut().find(|g| g.id == "dfbhd")
+                                {
+                                    g.log.push(format!("config save failed: {e}"));
+                                    if g.log.len() > 100 {
+                                        let overflow = g.log.len() - 100;
+                                        g.log.drain(0..overflow);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // link_game_folder logs a clear failure reason and preserves any prior link.
+                        }
+                    }
+                }
             }
             if ui
                 .button(egui::RichText::new("APPLY PROFILE").monospace())
@@ -240,7 +303,7 @@ impl LauncherApp {
                 .button(egui::RichText::new("LAUNCH").monospace())
                 .clicked()
             {
-                self.state.launch_stub();
+                self.state.launch_game("dfbhd");
             }
         });
 
@@ -265,6 +328,22 @@ impl LauncherApp {
                     }
                 }
             });
+    }
+
+    fn pff_names_hint(pff_paths: &[String], max_names: usize) -> String {
+        let names: Vec<String> = pff_paths
+            .iter()
+            .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
+            .map(|s| s.to_string())
+            .collect();
+        if names.is_empty() {
+            return "none".to_string();
+        }
+        if names.len() <= max_names {
+            return names.join(", ");
+        }
+        let shown = names[..max_names].join(", ");
+        format!("{shown}, ... (+{})", names.len() - max_names)
     }
 
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
