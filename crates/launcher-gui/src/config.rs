@@ -10,6 +10,7 @@ pub struct GameLinkConfig {
     pub install_dir: Option<String>,
     pub exe_path: Option<String>,
     pub pff_paths: Vec<String>,
+    pub active_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -55,6 +56,25 @@ mod tests {
                 install_dir: Some("C:/Games/DFBHD".to_string()),
                 exe_path: Some("C:/Games/DFBHD/dfbhd.exe".to_string()),
                 pff_paths: vec!["C:/Games/DFBHD/resource.pff".to_string()],
+                active_profile_id: None,
+            },
+        );
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: LauncherConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn roundtrip_config_serialization_includes_active_profile() {
+        let mut cfg = LauncherConfig::default();
+        cfg.games.insert(
+            "dfbhd".to_string(),
+            GameLinkConfig {
+                source_linked: true,
+                install_dir: Some("C:/Games/DFBHD".to_string()),
+                exe_path: Some("C:/Games/DFBHD/dfbhd.exe".to_string()),
+                pff_paths: vec!["C:/Games/DFBHD/localres.pff".to_string()],
+                active_profile_id: Some("hd_textures".to_string()),
             },
         );
         let json = serde_json::to_string(&cfg).unwrap();
@@ -66,6 +86,23 @@ mod tests {
     fn load_invalid_json_string_as_default_logic() {
         let bad: Result<LauncherConfig, _> = serde_json::from_str("not json");
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn game_link_config_deserializes_missing_active_profile_for_backward_compat() {
+        let json = r#"{
+            "games": {
+                "dfbhd": {
+                    "source_linked": true,
+                    "install_dir": "C:/Games/DFBHD",
+                    "exe_path": "C:/Games/DFBHD/dfbhd.exe",
+                    "pff_paths": ["C:/Games/DFBHD/localres.pff"]
+                }
+            }
+        }"#;
+        let cfg: LauncherConfig = serde_json::from_str(json).expect("old config should deserialize");
+        let g = cfg.games.get("dfbhd").expect("dfbhd entry");
+        assert_eq!(g.active_profile_id, None);
     }
 
     #[test]

@@ -191,6 +191,11 @@ impl LauncherState {
             game.install_dir = saved.install_dir.clone();
             game.exe_path = saved.exe_path.clone();
             game.pff_paths = saved.pff_paths.clone();
+            if let Some(id) = saved.active_profile_id.as_ref() {
+                if !id.is_empty() && game.profiles.iter().any(|p| p.id == *id) {
+                    game.active_profile_id = id.clone();
+                }
+            }
             if saved.source_linked {
                 game.source_label = saved
                     .install_dir
@@ -221,6 +226,11 @@ impl LauncherState {
                     install_dir: game.install_dir.clone(),
                     exe_path: game.exe_path.clone(),
                     pff_paths: game.pff_paths.clone(),
+                    active_profile_id: if game.active_profile_id.is_empty() {
+                        None
+                    } else {
+                        Some(game.active_profile_id.clone())
+                    },
                 },
             );
         }
@@ -340,6 +350,7 @@ impl LauncherState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{GameLinkConfig, LauncherConfig};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -533,6 +544,66 @@ mod tests {
         assert_eq!(s2.export_config(), exported);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_loaded_and_export_config_preserves_active_profile() {
+        let mut cfg = LauncherConfig::default();
+        cfg.games.insert(
+            "dfbhd".to_string(),
+            GameLinkConfig {
+                source_linked: true,
+                install_dir: Some("C:/Games/DFBHD".to_string()),
+                exe_path: Some("C:/Games/DFBHD/dfbhd.exe".to_string()),
+                pff_paths: vec!["C:/Games/DFBHD/localres.pff".to_string()],
+                active_profile_id: Some("hd_textures".to_string()),
+            },
+        );
+        let mut s = LauncherState::default();
+        s.apply_loaded_config(&cfg);
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert_eq!(g.active_profile_id, "hd_textures");
+        assert_eq!(
+            s.export_config()
+                .games
+                .get("dfbhd")
+                .unwrap()
+                .active_profile_id
+                .as_deref(),
+            Some("hd_textures")
+        );
+    }
+
+    #[test]
+    fn apply_loaded_config_ignores_unknown_active_profile() {
+        let mut cfg = LauncherConfig::default();
+        cfg.games.insert(
+            "dfbhd".to_string(),
+            GameLinkConfig {
+                source_linked: false,
+                install_dir: None,
+                exe_path: None,
+                pff_paths: vec![],
+                active_profile_id: Some("nope".to_string()),
+            },
+        );
+        let mut s = LauncherState::default();
+        let before = s
+            .games
+            .iter()
+            .find(|g| g.id == "dfbhd")
+            .unwrap()
+            .active_profile_id
+            .clone();
+        s.apply_loaded_config(&cfg);
+        let after = s
+            .games
+            .iter()
+            .find(|g| g.id == "dfbhd")
+            .unwrap()
+            .active_profile_id
+            .clone();
+        assert_eq!(after, before);
     }
 
     #[test]
