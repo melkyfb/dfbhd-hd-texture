@@ -105,6 +105,96 @@ pub(crate) const DFBHD_WRAPPER_MANAGED_FILES: &[&str] = &[
     "scripts/BHD_Asi.ini",
 ];
 
+#[allow(dead_code)]
+pub(crate) fn install_dfbhd_wrapper_to_install(
+    install_dir: &Path,
+    bundle_dir: &Path,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    for rel in DFBHD_WRAPPER_MANAGED_FILES {
+        let src = bundle_dir.join(rel);
+        let dest = install_dir.join(rel);
+
+        if !src.is_file() {
+            let err = format!(
+                "wrapper install failed: missing bundle file '{}' (expected '{}')",
+                rel,
+                src.display()
+            );
+            push_log(log, err.clone());
+            return Err(err);
+        }
+
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                let err = format!(
+                    "wrapper install failed: could not create directory '{}': {}",
+                    parent.display(),
+                    e
+                );
+                push_log(log, err.clone());
+                return Err(err);
+            }
+        }
+
+        let mut bak_os = dest.clone().into_os_string();
+        bak_os.push(".launcherbak");
+        let bak = std::path::PathBuf::from(bak_os);
+
+        if dest.exists() {
+            if bak.exists() {
+                push_log(
+                    log,
+                    format!(
+                        "wrapper backup already present for '{}'; keeping existing '{}'",
+                        dest.display(),
+                        bak.display()
+                    ),
+                );
+            } else {
+                match std::fs::copy(&dest, &bak) {
+                    Ok(_) => push_log(
+                        log,
+                        format!(
+                            "wrapper backup created: '{}' from '{}'",
+                            bak.display(),
+                            dest.display()
+                        ),
+                    ),
+                    Err(e) => {
+                        let err = format!(
+                            "wrapper install failed: could not backup '{}' to '{}': {}",
+                            dest.display(),
+                            bak.display(),
+                            e
+                        );
+                        push_log(log, err.clone());
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        match std::fs::copy(&src, &dest) {
+            Ok(_) => push_log(
+                log,
+                format!("wrapper installed: '{}' (from bundle)", dest.display()),
+            ),
+            Err(e) => {
+                let err = format!(
+                    "wrapper install failed: could not copy '{}' to '{}': {}",
+                    src.display(),
+                    dest.display(),
+                    e
+                );
+                push_log(log, err.clone());
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn unlinked_source_label(game_id: &str) -> String {
     match game_id {
         "dfbhd" => "ISO/Install [not linked]".to_string(),
@@ -1096,5 +1186,118 @@ mod tests {
                 || g.log.join("\n").to_lowercase().contains("fail")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_wrapper_copies_managed_files_and_creates_scripts_dir() {
+        let install = unique_temp_dir("wrapper-install-copy");
+        let bundle = unique_temp_dir("wrapper-bundle-copy");
+
+        for (rel, content) in [
+            ("d3d8.dll", b"BHD-D3D8DLL" as &[u8]),
+            ("d3d8.ini", b"BHD-D3D8INI"),
+            ("dinput8.dll", b"BHD-DINPUT8"),
+            ("scripts/BHD_Asi.asi", b"BHD-ASI"),
+            ("scripts/BHD_Asi.ini", b"BHD-ASI-INI"),
+        ] {
+            write_file(&bundle.join(rel), content);
+        }
+
+        let mut log: Vec<String> = Vec::new();
+        let res = install_dfbhd_wrapper_to_install(&install, &bundle, &mut log);
+        assert!(res.is_ok(), "expected install ok, got {res:?}");
+
+        for rel in DFBHD_WRAPPER_MANAGED_FILES {
+            let dest = install.join(rel);
+            assert!(dest.is_file(), "missing installed file: {dest:?}");
+            let expected = std::fs::read(bundle.join(rel)).unwrap();
+            assert_eq!(
+                std::fs::read(&dest).unwrap(),
+                expected,
+                "installed content mismatch for {rel}"
+            );
+        }
+        assert!(install.join("scripts").is_dir());
+
+        let _ = std::fs::remove_dir_all(&install);
+        let _ = std::fs::remove_dir_all(&bundle);
+    }
+
+    #[test]
+    fn install_wrapper_backs_up_existing_files_once() {
+        let install = unique_temp_dir("wrapper-install-bak");
+        let bundle = unique_temp_dir("wrapper-bundle-bak");
+
+        // Pre-existing user files in the install that must survive via backups.
+        write_file(&install.join("d3d8.dll"), b"USER-D3D8");
+        write_file(&install.join("scripts/BHD_Asi.asi"), b"USER-ASI");
+
+        // Bundle content differs from the installed user content.
+        for (rel, content) in [
+            ("d3d8.dll", b"BHD-D3D8DLL" as &[u8]),
+            ("d3d8.ini", b"BHD-D3D8INI"),
+            ("dinput8.dll", b"BHD-DINPUT8"),
+            ("scripts/BHD_Asi.asi", b"BHD-ASI"),
+            ("scripts/BHD_Asi.ini", b"BHD-ASI-INI"),
+        ] {
+            write_file(&bundle.join(rel), content);
+        }
+
+        let mut log: Vec<String> = Vec::new();
+        install_dfbhd_wrapper_to_install(&install, &bundle, &mut log).unwrap();
+
+        assert_eq!(
+            std::fs::read(install.join("d3d8.dll.launcherbak")).unwrap(),
+            b"USER-D3D8"
+        );
+        assert_eq!(
+            std::fs::read(install.join("scripts/BHD_Asi.asi.launcherbak")).unwrap(),
+            b"USER-ASI"
+        );
+        assert_eq!(
+            std::fs::read(install.join("d3d8.dll")).unwrap(),
+            b"BHD-D3D8DLL"
+        );
+        assert_eq!(std::fs::read(install.join("scripts/BHD_Asi.asi")).unwrap(), b"BHD-ASI");
+
+        // Second run must not overwrite existing backups.
+        let mut log2: Vec<String> = Vec::new();
+        install_dfbhd_wrapper_to_install(&install, &bundle, &mut log2).unwrap();
+        assert_eq!(
+            std::fs::read(install.join("d3d8.dll.launcherbak")).unwrap(),
+            b"USER-D3D8"
+        );
+        assert_eq!(
+            std::fs::read(install.join("scripts/BHD_Asi.asi.launcherbak")).unwrap(),
+            b"USER-ASI"
+        );
+
+        let _ = std::fs::remove_dir_all(&install);
+        let _ = std::fs::remove_dir_all(&bundle);
+    }
+
+    #[test]
+    fn install_wrapper_missing_bundle_file_errors() {
+        let install = unique_temp_dir("wrapper-install-missing-bundle");
+        let bundle = unique_temp_dir("wrapper-bundle-missing");
+
+        write_file(&bundle.join("d3d8.dll"), b"BHD-D3D8DLL");
+        // scripts/BHD_Asi.asi missing from bundle.
+
+        let mut log: Vec<String> = Vec::new();
+        let res = install_dfbhd_wrapper_to_install(&install, &bundle, &mut log);
+        assert!(res.is_err(), "expected error for missing bundle file");
+        let err_text = res.unwrap_err().to_lowercase();
+        assert!(
+            err_text.contains("missing") || err_text.contains("not found") || err_text.contains("no such"),
+            "actionable error expected, got: {err_text}"
+        );
+        assert!(
+            log.iter().any(|l| l.to_lowercase().contains("missing") || l.to_lowercase().contains("fail")),
+            "failure should be logged, got: {log:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&install);
+        let _ = std::fs::remove_dir_all(&bundle);
     }
 }
