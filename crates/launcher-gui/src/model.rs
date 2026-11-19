@@ -68,6 +68,34 @@ pub fn resolve_dfbhd_hd_localres_pack_path() -> Option<std::path::PathBuf> {
     None
 }
 
+pub fn resolve_dfbhd_hd_resource_pack_path() -> Option<std::path::PathBuf> {
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(base) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        bases.push(base);
+    }
+    if let Some(base) = std::env::current_dir().ok() {
+        bases.push(base);
+    }
+    resolve_dfbhd_hd_resource_pack_path_from_bases(bases)
+}
+
+pub(crate) fn resolve_dfbhd_hd_resource_pack_path_from_bases<
+    I: IntoIterator<Item = std::path::PathBuf>,
+>(
+    bases: I,
+) -> Option<std::path::PathBuf> {
+    for base in bases {
+        let candidate = base.join("assets/profiles/dfbhd/hd_textures/resource.pff");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 pub fn resolve_dfbhd_wrapper_bundle_dir() -> Option<std::path::PathBuf> {
     let mut bases: Vec<std::path::PathBuf> = Vec::new();
     if let Some(base) = std::env::current_exe()
@@ -975,6 +1003,21 @@ mod tests {
         );
         assert!(bundle.is_dir());
 
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn resolve_dfbhd_resource_pack_finds_assets_relative_to_base() {
+        let dir = unique_temp_dir("resource-pack");
+        let pack = dir.join("assets/profiles/dfbhd/hd_textures/resource.pff");
+        write_file(&pack, b"HD-RESOURCE");
+        assert_eq!(
+            resolve_dfbhd_hd_resource_pack_path_from_bases([dir.clone()]),
+            Some(pack.clone())
+        );
+        let empty = unique_temp_dir("resource-pack-empty");
+        assert_eq!(resolve_dfbhd_hd_resource_pack_path_from_bases([empty.clone()]), None);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&empty);
     }
