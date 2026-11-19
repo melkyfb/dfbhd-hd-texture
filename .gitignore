@@ -7,5 +7,6 @@
 *.PFF
 *.CAB
 !assets/profiles/dfbhd/hd_textures/localres.pff
+!assets/profiles/dfbhd/hd_textures/resource.pff
 .DS_Store
 Cargo.lock
