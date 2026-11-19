@@ -147,4 +147,38 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn errors_when_install_dir_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "launcher-gui-detect-missing-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+
+        let err = scan_install_dir(&dir).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("does not exist"),
+            "error should mention missing directory, got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_install_path_is_not_directory() {
+        let dir = unique_temp_dir("notdir");
+        let file_path = dir.join("file.txt");
+        fs::write(&file_path, b"not a dir").unwrap();
+
+        let err = scan_install_dir(&file_path).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("not a directory"),
+            "error should mention non-directory path, got: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

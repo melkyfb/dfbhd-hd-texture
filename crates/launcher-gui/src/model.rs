@@ -40,7 +40,7 @@ pub struct LauncherState {
 
 const LOG_CAP: usize = 100;
 
-fn push_log(log: &mut Vec<String>, entry: impl Into<String>) {
+pub(crate) fn push_log(log: &mut Vec<String>, entry: impl Into<String>) {
     log.push(entry.into());
     if log.len() > LOG_CAP {
         let overflow = log.len() - LOG_CAP;
@@ -55,7 +55,7 @@ fn unlinked_source_label(game_id: &str) -> String {
     }
 }
 
-fn pff_names_hint(pff_paths: &[String], max_names: usize) -> String {
+pub(crate) fn pff_names_hint(pff_paths: &[String], max_names: usize) -> String {
     let names: Vec<String> = pff_paths
         .iter()
         .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
@@ -514,11 +514,101 @@ mod tests {
         s2.apply_loaded_config(&exported);
         let g = s2.games.iter().find(|g| g.id == "dfbhd").unwrap();
         assert!(g.source_linked);
-        assert_eq!(g.install_dir, s.games.iter().find(|g| g.id == "dfbhd").unwrap().install_dir);
-        assert_eq!(g.exe_path, s.games.iter().find(|g| g.id == "dfbhd").unwrap().exe_path);
-        assert_eq!(g.pff_paths, s.games.iter().find(|g| g.id == "dfbhd").unwrap().pff_paths);
+        assert_eq!(
+            g.install_dir,
+            s.games
+                .iter()
+                .find(|g| g.id == "dfbhd")
+                .unwrap()
+                .install_dir
+        );
+        assert_eq!(
+            g.exe_path,
+            s.games.iter().find(|g| g.id == "dfbhd").unwrap().exe_path
+        );
+        assert_eq!(
+            g.pff_paths,
+            s.games.iter().find(|g| g.id == "dfbhd").unwrap().pff_paths
+        );
         assert_eq!(s2.export_config(), exported);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relink_replaces_prior_linked_paths_and_state() {
+        let dir_a = unique_temp_dir("relink-a");
+        fs::write(dir_a.join("dfbhd.exe"), b"exe").unwrap();
+        fs::write(dir_a.join("a.pff"), b"pff").unwrap();
+
+        let dir_b = unique_temp_dir("relink-b");
+        let sub = dir_b.join("assets");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir_b.join("dfbhd.exe"), b"exe2").unwrap();
+        fs::write(dir_b.join("b.pff"), b"pff").unwrap();
+        fs::write(sub.join("c.pff"), b"pff").unwrap();
+
+        let mut s = LauncherState::default();
+        s.link_game_folder("dfbhd", &dir_a.to_string_lossy())
+            .unwrap();
+        let first = s.games.iter().find(|g| g.id == "dfbhd").unwrap().clone();
+
+        s.link_game_folder("dfbhd", &dir_b.to_string_lossy())
+            .unwrap();
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+
+        assert!(g.source_linked);
+        assert_eq!(
+            g.install_dir.as_deref(),
+            Some(dir_b.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            g.exe_path.as_deref(),
+            Some(dir_b.join("dfbhd.exe").to_string_lossy().as_ref())
+        );
+        assert_ne!(g.install_dir, first.install_dir);
+        assert_ne!(g.exe_path, first.exe_path);
+        assert_ne!(g.pff_paths, first.pff_paths);
+        assert_eq!(g.pff_paths.len(), 2);
+        assert!(g
+            .pff_paths
+            .iter()
+            .all(|p| p.starts_with(&dir_b.to_string_lossy().to_string())));
+        assert_eq!(g.source_label, dir_b.to_string_lossy().to_string());
+        let log_text = g.log.join("\n");
+        assert!(log_text.contains(&dir_b.to_string_lossy().to_string()));
+        assert!(log_text.contains("linked install"));
+
+        let _ = fs::remove_dir_all(&dir_a);
+        let _ = fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn launch_blocked_when_linked_but_executable_missing() {
+        let mut s = LauncherState::default();
+        {
+            let g = s.games.iter_mut().find(|g| g.id == "dfbhd").unwrap();
+            g.source_linked = true;
+            g.install_dir = Some("C:/Games/DFBHD-missing".to_string());
+            g.exe_path = Some("C:/Games/DFBHD-missing/dfbhd.exe".to_string());
+            g.log.clear();
+        }
+
+        s.launch_game("dfbhd");
+
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        let last = g
+            .log
+            .last()
+            .expect("expected launch guard log")
+            .to_lowercase();
+        assert!(
+            last.contains("missing executable"),
+            "expected missing executable guard, got: {last}"
+        );
+        assert!(
+            last.contains("re-attach") || last.contains("attach") || last.contains("scan") || last.contains("link"),
+            "expected re-attach guidance, got: {last}"
+        );
     }
 }

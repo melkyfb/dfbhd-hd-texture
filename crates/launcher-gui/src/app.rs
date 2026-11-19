@@ -1,9 +1,7 @@
-use std::path::Path;
-
 use eframe::egui;
 
 use crate::config;
-use crate::model::{LauncherState, View};
+use crate::model::{self, LauncherState, View};
 use crate::theme::{apply_vault_theme, palette};
 
 pub struct LauncherApp {
@@ -238,7 +236,7 @@ impl LauncherApp {
                 .monospace()
                 .color(p.muted),
         );
-        let pff_names = Self::pff_names_hint(&pff_paths, 3);
+        let pff_names = model::pff_names_hint(&pff_paths, 3);
         ui.label(
             egui::RichText::new(format!("PFF FILES: {} [{}]", pff_paths.len(), pff_names))
                 .monospace()
@@ -279,11 +277,7 @@ impl LauncherApp {
                                 if let Some(g) =
                                     self.state.games.iter_mut().find(|g| g.id == "dfbhd")
                                 {
-                                    g.log.push(format!("config save failed: {e}"));
-                                    if g.log.len() > 100 {
-                                        let overflow = g.log.len() - 100;
-                                        g.log.drain(0..overflow);
-                                    }
+                                    model::push_log(&mut g.log, format!("config save failed: {e}"));
                                 }
                             }
                         }
@@ -330,21 +324,6 @@ impl LauncherApp {
             });
     }
 
-    fn pff_names_hint(pff_paths: &[String], max_names: usize) -> String {
-        let names: Vec<String> = pff_paths
-            .iter()
-            .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
-            .map(|s| s.to_string())
-            .collect();
-        if names.is_empty() {
-            return "none".to_string();
-        }
-        if names.len() <= max_names {
-            return names.join(", ");
-        }
-        let shown = names[..max_names].join(", ");
-        format!("{shown}, ... (+{})", names.len() - max_names)
-    }
 
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
         let p = palette();
