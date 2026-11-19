@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod detect;
 mod model;
 mod theme;
 
