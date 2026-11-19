@@ -2102,4 +2102,65 @@ mod tests {
             "hd_widescreen_1080p"
         );
     }
+
+    #[test]
+    fn apply_hd_widescreen_with_resource_applies_textures_and_wrapper() {
+        let install = unique_temp_dir("ws-all");
+        write_file(&install.join("localres.pff"), b"ORIG-L");
+        write_file(&install.join("resource.pff"), b"ORIG-R");
+        let packs = unique_temp_dir("ws-packs");
+        let lpack = packs.join("localres.pff"); write_file(&lpack, b"HD-L");
+        let rpack = packs.join("resource.pff"); write_file(&rpack, b"HD-R");
+        let bundle = unique_temp_dir("ws-bundle");
+        for rel in DFBHD_WRAPPER_MANAGED_FILES { write_file(&bundle.join(rel), b"BHD-WRAPPER"); }
+
+        let mut s = LauncherState::default();
+        s.apply_dfbhd_hd_widescreen_with_all_paths(
+            &install.to_string_lossy(), &lpack.to_string_lossy(), Some(&rpack.to_string_lossy()), &bundle.to_string_lossy(),
+        );
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"HD-L");
+        assert_eq!(fs::read(install.join("resource.pff")).unwrap(), b"HD-R");
+        assert_eq!(fs::read(install.join("localres.pff.original")).unwrap(), b"ORIG-L");
+        assert_eq!(fs::read(install.join("resource.pff.original")).unwrap(), b"ORIG-R");
+        for rel in DFBHD_WRAPPER_MANAGED_FILES { assert_eq!(fs::read(install.join(rel)).unwrap(), b"BHD-WRAPPER"); }
+        let _ = fs::remove_dir_all(&install); let _ = fs::remove_dir_all(&packs); let _ = fs::remove_dir_all(&bundle);
+    }
+
+    #[test]
+    fn apply_original_after_hd_widescreen_restores_localres_and_resource_and_cleans_wrapper() {
+        let install = unique_temp_dir("cycle-all");
+        write_file(&install.join("localres.pff"), b"ORIG-L");
+        write_file(&install.join("resource.pff"), b"ORIG-R");
+        let packs = unique_temp_dir("cycle-packs");
+        let lpack = packs.join("localres.pff"); write_file(&lpack, b"HD-L");
+        let rpack = packs.join("resource.pff"); write_file(&rpack, b"HD-R");
+        let bundle = unique_temp_dir("cycle-bundle");
+        for rel in DFBHD_WRAPPER_MANAGED_FILES { write_file(&bundle.join(rel), b"BHD-WRAPPER"); }
+
+        let mut s = LauncherState::default();
+        s.apply_dfbhd_hd_widescreen_with_all_paths(&install.to_string_lossy(), &lpack.to_string_lossy(), Some(&rpack.to_string_lossy()), &bundle.to_string_lossy());
+        s.apply_dfbhd_profile_with_pack_paths("original", &install.to_string_lossy(), "", None);
+
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"ORIG-L");
+        assert_eq!(fs::read(install.join("resource.pff")).unwrap(), b"ORIG-R");
+        for rel in DFBHD_WRAPPER_MANAGED_FILES { assert!(!install.join(rel).exists()); }
+        let _ = fs::remove_dir_all(&install); let _ = fs::remove_dir_all(&packs); let _ = fs::remove_dir_all(&bundle);
+    }
+
+    #[test]
+    fn hd_textures_does_not_touch_wrapper_when_resource_applied() {
+        let install = unique_temp_dir("hd-res-nowrap");
+        write_file(&install.join("localres.pff"), b"ORIG-L");
+        write_file(&install.join("resource.pff"), b"ORIG-R");
+        write_file(&install.join("d3d8.dll"), b"USER-D3D8");
+        let packs = unique_temp_dir("hd-res-packs");
+        let lpack = packs.join("localres.pff"); write_file(&lpack, b"HD-L");
+        let rpack = packs.join("resource.pff"); write_file(&rpack, b"HD-R");
+        let mut s = LauncherState::default();
+        s.apply_dfbhd_profile_with_pack_paths("hd_textures", &install.to_string_lossy(), &lpack.to_string_lossy(), Some(&rpack.to_string_lossy()));
+        assert_eq!(fs::read(install.join("localres.pff")).unwrap(), b"HD-L");
+        assert_eq!(fs::read(install.join("resource.pff")).unwrap(), b"HD-R");
+        assert_eq!(fs::read(install.join("d3d8.dll")).unwrap(), b"USER-D3D8");
+        let _ = fs::remove_dir_all(&install); let _ = fs::remove_dir_all(&packs);
+    }
 }
