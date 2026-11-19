@@ -68,6 +68,43 @@ pub fn resolve_dfbhd_hd_localres_pack_path() -> Option<std::path::PathBuf> {
     None
 }
 
+#[allow(dead_code)]
+pub fn resolve_dfbhd_wrapper_bundle_dir() -> Option<std::path::PathBuf> {
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(base) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        bases.push(base);
+    }
+    if let Some(base) = std::env::current_dir().ok() {
+        bases.push(base);
+    }
+    resolve_dfbhd_wrapper_bundle_dir_from_bases(bases)
+}
+
+pub(crate) fn resolve_dfbhd_wrapper_bundle_dir_from_bases<I>(bases: I) -> Option<std::path::PathBuf>
+where
+    I: IntoIterator<Item = std::path::PathBuf>,
+{
+    for base in bases {
+        let candidate = base.join("assets/wrapper/dfbhd_widescreen");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub(crate) const DFBHD_WRAPPER_MANAGED_FILES: &[&str] = &[
+    "d3d8.dll",
+    "d3d8.ini",
+    "dinput8.dll",
+    "scripts/BHD_Asi.asi",
+    "scripts/BHD_Asi.ini",
+];
+
 fn unlinked_source_label(game_id: &str) -> String {
     match game_id {
         "dfbhd" => "ISO/Install [not linked]".to_string(),
@@ -109,6 +146,10 @@ impl Default for LauncherState {
                 Profile {
                     id: "hd_textures".to_string(),
                     name: "HD Textures".to_string(),
+                },
+                Profile {
+                    id: "hd_widescreen_1080p".to_string(),
+                    name: "HD Widescreen (1080p)".to_string(),
                 },
             ],
             active_profile_id: "original".to_string(),
@@ -585,6 +626,58 @@ mod tests {
             .any(|p| p.id == "hd_textures" && p.name == "HD Textures"));
         assert_eq!(g.active_profile_id, "original");
         assert!(!g.source_linked);
+    }
+
+    #[test]
+    fn default_state_includes_hd_widescreen_profile() {
+        let s = LauncherState::default();
+        let g = s.games.iter().find(|g| g.id == "dfbhd").expect("dfbhd");
+        assert!(g
+            .profiles
+            .iter()
+            .any(|p| p.id == "original" && p.name == "Original"));
+        assert!(g
+            .profiles
+            .iter()
+            .any(|p| p.id == "hd_textures" && p.name == "HD Textures"));
+        assert!(g.profiles.iter().any(|p| {
+            p.id == "hd_widescreen_1080p" && p.name == "HD Widescreen (1080p)"
+        }));
+    }
+
+    #[test]
+    fn resolve_dfbhd_wrapper_bundle_dir_finds_assets_relative_to_cwd() {
+        let dir = unique_temp_dir("wrapper-bundle");
+        let bundle = dir.join("assets/wrapper/dfbhd_widescreen");
+        fs::create_dir_all(&bundle).unwrap();
+
+        let empty = unique_temp_dir("wrapper-bundle-empty");
+        assert_eq!(
+            resolve_dfbhd_wrapper_bundle_dir_from_bases([empty.clone()]),
+            None
+        );
+        assert_eq!(
+            resolve_dfbhd_wrapper_bundle_dir_from_bases([dir.clone()]),
+            Some(bundle.clone())
+        );
+        assert!(bundle.is_dir());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn wrapper_managed_files_matches_bundle_layout() {
+        assert_eq!(
+            DFBHD_WRAPPER_MANAGED_FILES,
+            &[
+                "d3d8.dll",
+                "d3d8.ini",
+                "dinput8.dll",
+                "scripts/BHD_Asi.asi",
+                "scripts/BHD_Asi.ini",
+            ]
+        );
     }
 
     #[test]
