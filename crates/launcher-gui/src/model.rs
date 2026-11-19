@@ -48,6 +48,26 @@ pub(crate) fn push_log(log: &mut Vec<String>, entry: impl Into<String>) {
     }
 }
 
+pub fn resolve_dfbhd_hd_localres_pack_path() -> Option<std::path::PathBuf> {
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(base) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        bases.push(base);
+    }
+    if let Some(base) = std::env::current_dir().ok() {
+        bases.push(base);
+    }
+    for base in bases {
+        let candidate = base.join("assets/profiles/dfbhd/hd_textures/localres.pff");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn unlinked_source_label(game_id: &str) -> String {
     match game_id {
         "dfbhd" => "ISO/Install [not linked]".to_string(),
@@ -148,19 +168,10 @@ impl LauncherState {
     }
 
     pub fn apply_profile_stub(&mut self) {
-        let Some(game) = self.selected_game_mut() else {
+        let Some(id) = self.selected_game().map(|g| g.id.clone()) else {
             return;
         };
-        let profile = if game.active_profile_id.is_empty() {
-            "none".to_string()
-        } else {
-            game.active_profile_id.clone()
-        };
-        let status = if game.source_linked { "linked" } else { "unlinked" };
-        push_log(
-            &mut game.log,
-            format!("apply profile stub: '{}' (source {})", profile, status),
-        );
+        self.apply_active_profile_for_game(&id);
     }
 
     #[allow(dead_code)]
@@ -345,6 +356,196 @@ impl LauncherState {
             }
         }
     }
+
+    pub fn apply_dfbhd_profile_with_pack_path(
+        &mut self,
+        profile_id: &str,
+        install_dir: &str,
+        hd_pack_path: &str,
+    ) {
+        let Some(idx) = self.games.iter().position(|g| g.id == "dfbhd") else {
+            return;
+        };
+        let install = Path::new(install_dir);
+        let target = install.join("localres.pff");
+        let original_backup = install.join("localres.pff.original");
+        let bak = install.join("localres.pff.bak");
+
+        match profile_id {
+            "original" => {
+                let (source, source_label) = if original_backup.exists() {
+                    (original_backup.clone(), "localres.pff.original")
+                } else if bak.exists() {
+                    (bak.clone(), "localres.pff.bak")
+                } else {
+                    push_log(
+                        &mut self.games[idx].log,
+                        "profile apply failed: no original backup found to restore (expected localres.pff.original or localres.pff.bak)"
+                            .to_string(),
+                    );
+                    return;
+                };
+                match std::fs::copy(&source, &target) {
+                    Ok(_) => push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "restored original localres.pff from '{}' to '{}'",
+                            source.display(),
+                            target.display()
+                        ),
+                    ),
+                    Err(e) => push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply failed: could not restore original from '{}': {}",
+                            source_label, e
+                        ),
+                    ),
+                }
+            }
+            "hd_textures" => {
+                let pack = Path::new(hd_pack_path);
+                if !pack.is_file() {
+                    push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply failed: HD textures pack not found at '{}'",
+                            hd_pack_path
+                        ),
+                    );
+                    return;
+                }
+
+                if !original_backup.exists() {
+                    let backup_source = if bak.exists() {
+                        Some((bak.clone(), "localres.pff.bak"))
+                    } else if target.exists() {
+                        Some((target.clone(), "localres.pff"))
+                    } else {
+                        None
+                    };
+                    if let Some((src, label)) = backup_source {
+                        match std::fs::copy(&src, &original_backup) {
+                            Ok(_) => push_log(
+                                &mut self.games[idx].log,
+                                format!(
+                                    "created original backup '{}' from '{}'",
+                                    original_backup.display(),
+                                    label
+                                ),
+                            ),
+                            Err(e) => {
+                                push_log(
+                                    &mut self.games[idx].log,
+                                    format!(
+                                        "profile apply failed: could not create original backup from '{}': {}",
+                                        label, e
+                                    ),
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        push_log(
+                            &mut self.games[idx].log,
+                            "profile apply failed: cannot apply HD textures because no localres.pff, localres.pff.bak, or localres.pff.original was found to preserve as original"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                }
+
+                match std::fs::copy(pack, &target) {
+                    Ok(_) => push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "applied HD textures profile: copied '{}' to '{}'",
+                            pack.display(),
+                            target.display()
+                        ),
+                    ),
+                    Err(e) => push_log(
+                        &mut self.games[idx].log,
+                        format!(
+                            "profile apply failed: could not copy HD textures pack to '{}': {}",
+                            target.display(),
+                            e
+                        ),
+                    ),
+                }
+            }
+            _ => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!("profile apply failed: unknown profile '{}'", profile_id),
+                );
+            }
+        }
+    }
+
+    pub fn apply_active_profile_for_game(&mut self, game_id: &str) {
+        let Some(idx) = self.games.iter().position(|g| g.id == game_id) else {
+            return;
+        };
+
+        if game_id != "dfbhd" {
+            push_log(
+                &mut self.games[idx].log,
+                format!(
+                    "profile apply: no file-swap apply implemented for game '{}' (informational only)",
+                    game_id
+                ),
+            );
+            return;
+        }
+
+        let (source_linked, install_dir, active_profile_id) = {
+            let g = &self.games[idx];
+            (
+                g.source_linked,
+                g.install_dir.clone(),
+                g.active_profile_id.clone(),
+            )
+        };
+
+        if !source_linked || install_dir.as_deref().unwrap_or("").is_empty() {
+            push_log(
+                &mut self.games[idx].log,
+                "profile apply blocked: attach/scan and link DFBHD install first (install directory required)"
+                    .to_string(),
+            );
+            return;
+        }
+        let install_dir = install_dir.unwrap_or_default();
+
+        match active_profile_id.as_str() {
+            "original" => {
+                self.apply_dfbhd_profile_with_pack_path("original", &install_dir, "");
+            }
+            "hd_textures" => match resolve_dfbhd_hd_localres_pack_path() {
+                Some(pack) => {
+                    self.apply_dfbhd_profile_with_pack_path(
+                        "hd_textures",
+                        &install_dir,
+                        &pack.to_string_lossy(),
+                    );
+                }
+                None => {
+                    push_log(
+                        &mut self.games[idx].log,
+                        "profile apply failed: HD textures pack not found (expected assets/profiles/dfbhd/hd_textures/localres.pff relative to executable or current directory)"
+                            .to_string(),
+                    );
+                }
+            },
+            other => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!("profile apply failed: unknown DFBHD profile '{}'", other),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -391,7 +592,13 @@ mod tests {
         s.select_profile("hd_textures");
         assert_eq!(s.selected_game().unwrap().active_profile_id, "hd_textures");
         s.apply_profile_stub();
-        assert!(!s.selected_game().unwrap().log.is_empty());
+        let g = s.selected_game().unwrap();
+        assert!(!g.log.is_empty());
+        let last = g.log.last().unwrap().to_lowercase();
+        assert!(
+            last.contains("profile apply") || last.contains("blocked") || last.contains("link"),
+            "expected actionable apply log, got: {last}"
+        );
     }
 
     #[test]
@@ -413,8 +620,11 @@ mod tests {
         }
         let g = s.selected_game().unwrap();
         assert_eq!(g.log.len(), LOG_CAP);
-        let last = g.log.last().unwrap();
-        assert!(last.contains("apply profile stub"));
+        let last = g.log.last().unwrap().to_lowercase();
+        assert!(
+            last.contains("profile apply") || last.contains("blocked"),
+            "expected bounded apply log entry, got: {last}"
+        );
         assert!(!g.log.iter().any(|l| l == "awaiting game link..."));
     }
 
@@ -681,5 +891,116 @@ mod tests {
             last.contains("re-attach") || last.contains("attach") || last.contains("scan") || last.contains("link"),
             "expected re-attach guidance, got: {last}"
         );
+    }
+
+    fn write_file(path: &std::path::Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn apply_original_restores_localres_from_bak_when_missing() {
+        let dir = unique_temp_dir("apply-orig-bak");
+        let bak = dir.join("localres.pff.bak");
+        write_file(&bak, b"ORIGINAL");
+        // no localres.pff
+        let mut s = LauncherState::default();
+        let g = s.games.iter_mut().find(|g| g.id == "dfbhd").unwrap();
+        g.source_linked = true;
+        g.install_dir = Some(dir.to_string_lossy().to_string());
+        g.active_profile_id = "original".to_string();
+        g.log.clear();
+
+        s.apply_active_profile_for_game("dfbhd");
+
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert_eq!(std::fs::read(dir.join("localres.pff")).unwrap(), b"ORIGINAL");
+        assert!(
+            g.log.join("\n").to_lowercase().contains("original")
+                || g.log.join("\n").to_lowercase().contains("restor")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_hd_creates_original_backup_and_copies_pack() {
+        let dir = unique_temp_dir("apply-hd");
+        write_file(&dir.join("localres.pff"), b"ORIGINAL");
+        let pack_dir = unique_temp_dir("pack-hd");
+        let pack = pack_dir.join("localres.pff");
+        write_file(&pack, b"HD");
+
+        let mut s = LauncherState::default();
+        let g = s.games.iter_mut().find(|g| g.id == "dfbhd").unwrap();
+        g.source_linked = true;
+        g.install_dir = Some(dir.to_string_lossy().to_string());
+        g.active_profile_id = "hd_textures".to_string();
+        g.log.clear();
+
+        // helper intended for tests to supply explicit pack path
+        s.apply_dfbhd_profile_with_pack_path("hd_textures", &dir.to_string_lossy(), &pack.to_string_lossy());
+
+        assert_eq!(
+            std::fs::read(dir.join("localres.pff.original")).unwrap(),
+            b"ORIGINAL"
+        );
+        assert_eq!(std::fs::read(dir.join("localres.pff")).unwrap(), b"HD");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&pack_dir);
+    }
+
+    #[test]
+    fn apply_hd_uses_bak_as_original_source_when_localres_missing() {
+        let dir = unique_temp_dir("apply-hd-bak");
+        write_file(&dir.join("localres.pff.bak"), b"ORIGINAL");
+        let pack_dir = unique_temp_dir("pack-hd-bak");
+        let pack = pack_dir.join("localres.pff");
+        write_file(&pack, b"HD");
+
+        let mut s = LauncherState::default();
+        s.apply_dfbhd_profile_with_pack_path(
+            "hd_textures",
+            &dir.to_string_lossy(),
+            &pack.to_string_lossy(),
+        );
+
+        assert_eq!(std::fs::read(dir.join("localres.pff")).unwrap(), b"HD");
+        assert!(dir.join("localres.pff.bak").exists());
+        assert_eq!(
+            std::fs::read(dir.join("localres.pff.original"))
+                .unwrap_or_else(|_| std::fs::read(dir.join("localres.pff.bak")).unwrap()),
+            b"ORIGINAL"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&pack_dir);
+    }
+
+    #[test]
+    fn apply_hd_missing_pack_does_not_overwrite_or_drop_backup() {
+        let dir = unique_temp_dir("apply-hd-missing");
+        write_file(&dir.join("localres.pff"), b"ORIGINAL");
+        let mut s = LauncherState::default();
+        let g = s.games.iter_mut().find(|g| g.id == "dfbhd").unwrap();
+        g.source_linked = true;
+        g.install_dir = Some(dir.to_string_lossy().to_string());
+        g.active_profile_id = "hd_textures".to_string();
+        g.log.clear();
+
+        s.apply_dfbhd_profile_with_pack_path(
+            "hd_textures",
+            &dir.to_string_lossy(),
+            "C:/definitely/missing/localres.pff",
+        );
+
+        assert_eq!(std::fs::read(dir.join("localres.pff")).unwrap(), b"ORIGINAL");
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert!(
+            g.log.join("\n").to_lowercase().contains("missing")
+                || g.log.join("\n").to_lowercase().contains("not found")
+                || g.log.join("\n").to_lowercase().contains("fail")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
