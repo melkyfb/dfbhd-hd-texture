@@ -167,6 +167,7 @@ impl LauncherState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn apply_profile_stub(&mut self) {
         let Some(id) = self.selected_game().map(|g| g.id.clone()) else {
             return;

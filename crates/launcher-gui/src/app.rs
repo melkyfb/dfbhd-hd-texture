@@ -291,7 +291,12 @@ impl LauncherApp {
                 .button(egui::RichText::new("APPLY PROFILE").monospace())
                 .clicked()
             {
-                self.state.apply_profile_stub();
+                self.state.apply_active_profile_for_game("dfbhd");
+                if let Err(e) = config::save_config(&self.state.export_config()) {
+                    if let Some(g) = self.state.games.iter_mut().find(|g| g.id == "dfbhd") {
+                        model::push_log(&mut g.log, format!("config save failed: {e}"));
+                    }
+                }
             }
             if ui
                 .button(egui::RichText::new("LAUNCH").monospace())
