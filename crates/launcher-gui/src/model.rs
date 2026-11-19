@@ -1,3 +1,9 @@
+use std::path::Path;
+use std::process::Command;
+
+use crate::config::{GameLinkConfig, LauncherConfig};
+use crate::detect::scan_install_dir;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     Dashboard,
@@ -17,6 +23,9 @@ pub struct GameNode {
     pub name: String,
     pub source_linked: bool,
     pub source_label: String,
+    pub install_dir: Option<String>,
+    pub exe_path: Option<String>,
+    pub pff_paths: Vec<String>,
     pub profiles: Vec<Profile>,
     pub active_profile_id: String,
     pub log: Vec<String>,
@@ -39,13 +48,39 @@ fn push_log(log: &mut Vec<String>, entry: impl Into<String>) {
     }
 }
 
+fn unlinked_source_label(game_id: &str) -> String {
+    match game_id {
+        "dfbhd" => "ISO/Install [not linked]".to_string(),
+        _ => "[empty / available]".to_string(),
+    }
+}
+
+fn pff_names_hint(pff_paths: &[String], max_names: usize) -> String {
+    let names: Vec<String> = pff_paths
+        .iter()
+        .filter_map(|p| Path::new(p).file_name().and_then(|n| n.to_str()))
+        .map(|s| s.to_string())
+        .collect();
+    if names.is_empty() {
+        return "none".to_string();
+    }
+    if names.len() <= max_names {
+        return names.join(", ");
+    }
+    let shown = names[..max_names].join(", ");
+    format!("{shown}, ... (+{})", names.len() - max_names)
+}
+
 impl Default for LauncherState {
     fn default() -> Self {
         let dfbhd = GameNode {
             id: "dfbhd".to_string(),
             name: "Delta Force: Black Hawk Down".to_string(),
             source_linked: false,
-            source_label: "ISO/Install [not linked]".to_string(),
+            source_label: unlinked_source_label("dfbhd"),
+            install_dir: None,
+            exe_path: None,
+            pff_paths: Vec::new(),
             profiles: vec![
                 Profile {
                     id: "original".to_string(),
@@ -64,7 +99,10 @@ impl Default for LauncherState {
             id: "slot-1".to_string(),
             name: "Empty Slot".to_string(),
             source_linked: false,
-            source_label: "[empty / available]".to_string(),
+            source_label: unlinked_source_label("slot-1"),
+            install_dir: None,
+            exe_path: None,
+            pff_paths: Vec::new(),
             profiles: Vec::new(),
             active_profile_id: String::new(),
             log: Vec::new(),
@@ -74,7 +112,10 @@ impl Default for LauncherState {
             id: "slot-2".to_string(),
             name: "Empty Slot".to_string(),
             source_linked: false,
-            source_label: "[empty / available]".to_string(),
+            source_label: unlinked_source_label("slot-2"),
+            install_dir: None,
+            exe_path: None,
+            pff_paths: Vec::new(),
             profiles: Vec::new(),
             active_profile_id: String::new(),
             log: Vec::new(),
@@ -133,19 +174,186 @@ impl LauncherState {
     }
 
     pub fn launch_stub(&mut self) {
-        let Some(game) = self.selected_game_mut() else {
+        let Some(id) = self.selected_game().map(|g| g.id.clone()) else {
             return;
         };
-        push_log(
-            &mut game.log,
-            "launch blocked: attach/scan and link game source first".to_string(),
-        );
+        self.launch_game(&id);
+    }
+
+    pub fn apply_loaded_config(&mut self, cfg: &LauncherConfig) {
+        for game in &mut self.games {
+            let Some(saved) = cfg.games.get(&game.id) else {
+                continue;
+            };
+            game.source_linked = saved.source_linked;
+            game.install_dir = saved.install_dir.clone();
+            game.exe_path = saved.exe_path.clone();
+            game.pff_paths = saved.pff_paths.clone();
+            if saved.source_linked {
+                game.source_label = saved
+                    .install_dir
+                    .clone()
+                    .or_else(|| saved.exe_path.clone())
+                    .unwrap_or_else(|| "linked install".to_string());
+                push_log(
+                    &mut game.log,
+                    format!(
+                        "loaded saved link config: {}",
+                        game.source_label
+                    ),
+                );
+            } else {
+                game.source_label = unlinked_source_label(&game.id);
+                push_log(&mut game.log, "loaded saved config: source unlinked".to_string());
+            }
+        }
+    }
+
+    pub fn export_config(&self) -> LauncherConfig {
+        let mut cfg = LauncherConfig::default();
+        for game in &self.games {
+            cfg.games.insert(
+                game.id.clone(),
+                GameLinkConfig {
+                    source_linked: game.source_linked,
+                    install_dir: game.install_dir.clone(),
+                    exe_path: game.exe_path.clone(),
+                    pff_paths: game.pff_paths.clone(),
+                },
+            );
+        }
+        cfg
+    }
+
+    pub fn link_game_folder(&mut self, game_id: &str, selected_dir: &str) -> Result<(), String> {
+        let Some(idx) = self.games.iter().position(|g| g.id == game_id) else {
+            return Err(format!("unknown game id: {game_id}"));
+        };
+        let result = scan_install_dir(Path::new(selected_dir));
+        match result {
+            Ok(detected) => {
+                let game = &mut self.games[idx];
+                game.source_linked = true;
+                game.install_dir = Some(detected.install_dir.clone());
+                game.exe_path = Some(detected.exe_path.clone());
+                game.pff_paths = detected.pff_paths.clone();
+                game.source_label = detected.install_dir.clone();
+                let names_hint = pff_names_hint(&detected.pff_paths, 3);
+                push_log(
+                    &mut game.log,
+                    format!(
+                        "linked install: {} (dfbhd.exe detected: {}; .pff files: {} [{}])",
+                        detected.install_dir,
+                        detected.exe_path,
+                        detected.pff_paths.len(),
+                        names_hint
+                    ),
+                );
+                Ok(())
+            }
+            Err(err) => {
+                let game = &mut self.games[idx];
+                push_log(
+                    &mut game.log,
+                    format!("scan/attach failed for '{}': {}", selected_dir, err),
+                );
+                Err(err)
+            }
+        }
+    }
+
+    pub fn launch_game(&mut self, game_id: &str) {
+        let Some(idx) = self.games.iter().position(|g| g.id == game_id) else {
+            return;
+        };
+
+        let (source_linked, install_dir, exe_path) = {
+            let game = &self.games[idx];
+            (
+                game.source_linked,
+                game.install_dir.clone(),
+                game.exe_path.clone(),
+            )
+        };
+
+        if !source_linked {
+            push_log(
+                &mut self.games[idx].log,
+                "launch blocked: attach/scan and link game source first".to_string(),
+            );
+            return;
+        }
+
+        let Some(exe) = exe_path else {
+            push_log(
+                &mut self.games[idx].log,
+                "launch blocked: missing executable path; re-attach/scan and link the game".to_string(),
+            );
+            return;
+        };
+
+        let exe_path_buf = Path::new(&exe);
+        if !exe_path_buf.exists() {
+            push_log(
+                &mut self.games[idx].log,
+                format!(
+                    "launch blocked: missing executable '{}'; re-attach/scan and link the game",
+                    exe
+                ),
+            );
+            return;
+        }
+
+        let cwd = install_dir
+            .clone()
+            .or_else(|| {
+                exe_path_buf
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
+            .unwrap_or_else(|| ".".to_string());
+
+        match Command::new(&exe).current_dir(&cwd).spawn() {
+            Ok(child) => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!(
+                        "launch started: '{}' (cwd: '{}', pid: {})",
+                        exe,
+                        cwd,
+                        child.id()
+                    ),
+                );
+            }
+            Err(e) => {
+                push_log(
+                    &mut self.games[idx].log,
+                    format!("launch failed: '{}' (cwd: '{}'): {}", exe, cwd, e),
+                );
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "launcher-gui-model-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn default_state_has_dfbhd_with_profiles() {
@@ -174,10 +382,10 @@ mod tests {
     }
 
     #[test]
-    fn launch_stub_guarded_when_unlinked() {
+    fn launch_game_guarded_when_unlinked() {
         let mut s = LauncherState::default();
         let before = s.selected_game().unwrap().log.len();
-        s.launch_stub();
+        s.launch_game("dfbhd");
         let g = s.selected_game().unwrap();
         assert!(g.log.len() >= before);
         let last = g.log.last().unwrap().to_lowercase();
@@ -230,5 +438,85 @@ mod tests {
         oob.scan_attach_stub();
         oob.launch_stub();
         assert!(oob.selected_game().is_none());
+    }
+
+    #[test]
+    fn link_game_folder_marks_linked_and_records_paths() {
+        let dir = unique_temp_dir("link-ok");
+        let subdir = dir.join("assets");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(dir.join("dfbhd.exe"), b"exe").unwrap();
+        fs::write(subdir.join("mission.pff"), b"pff").unwrap();
+
+        let mut s = LauncherState::default();
+        let res = s.link_game_folder("dfbhd", &dir.to_string_lossy());
+        assert!(res.is_ok(), "expected success, got {res:?}");
+
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert!(g.source_linked);
+        assert_eq!(g.install_dir.as_deref(), Some(dir.to_string_lossy().as_ref()));
+        assert_eq!(
+            g.exe_path.as_deref(),
+            Some(dir.join("dfbhd.exe").to_string_lossy().as_ref())
+        );
+        assert_eq!(g.pff_paths.len(), 1);
+        let log_text = g.log.join("\n").to_lowercase();
+        assert!(log_text.contains("dfbhd.exe"));
+        assert!(log_text.contains("pff"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_game_folder_failure_does_not_clear_existing_link() {
+        let valid = unique_temp_dir("valid");
+        fs::write(valid.join("dfbhd.exe"), b"exe").unwrap();
+        fs::write(valid.join("data.pff"), b"pff").unwrap();
+        let invalid = unique_temp_dir("invalid");
+        fs::write(invalid.join("readme.txt"), b"no exe").unwrap();
+
+        let mut s = LauncherState::default();
+        s.link_game_folder("dfbhd", &valid.to_string_lossy())
+            .expect("initial link should succeed");
+        let before = s.games.iter().find(|g| g.id == "dfbhd").unwrap().clone();
+
+        let err = s.link_game_folder("dfbhd", &invalid.to_string_lossy());
+        assert!(err.is_err());
+
+        let g = s.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert!(g.source_linked);
+        assert_eq!(g.install_dir, before.install_dir);
+        assert_eq!(g.exe_path, before.exe_path);
+        assert_eq!(g.pff_paths, before.pff_paths);
+        let last = g.log.last().unwrap().to_lowercase();
+        assert!(
+            last.contains("dfbhd") || last.contains("exe") || last.contains("error") || last.contains("fail"),
+            "expected clear failure log, got: {last}"
+        );
+
+        let _ = fs::remove_dir_all(&valid);
+        let _ = fs::remove_dir_all(&invalid);
+    }
+
+    #[test]
+    fn apply_loaded_and_export_config_roundtrip_state() {
+        let dir = unique_temp_dir("roundtrip");
+        fs::write(dir.join("dfbhd.exe"), b"exe").unwrap();
+        fs::write(dir.join("world.pff"), b"pff").unwrap();
+
+        let mut s = LauncherState::default();
+        s.link_game_folder("dfbhd", &dir.to_string_lossy()).unwrap();
+        let exported = s.export_config();
+
+        let mut s2 = LauncherState::default();
+        s2.apply_loaded_config(&exported);
+        let g = s2.games.iter().find(|g| g.id == "dfbhd").unwrap();
+        assert!(g.source_linked);
+        assert_eq!(g.install_dir, s.games.iter().find(|g| g.id == "dfbhd").unwrap().install_dir);
+        assert_eq!(g.exe_path, s.games.iter().find(|g| g.id == "dfbhd").unwrap().exe_path);
+        assert_eq!(g.pff_paths, s.games.iter().find(|g| g.id == "dfbhd").unwrap().pff_paths);
+        assert_eq!(s2.export_config(), exported);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
