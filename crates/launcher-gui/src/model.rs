@@ -195,6 +195,124 @@ pub(crate) fn install_dfbhd_wrapper_to_install(
     Ok(())
 }
 
+/// Reverse/cleanup of the wrapper files installed by
+/// [`install_dfbhd_wrapper_to_install`]. For each managed path, if a
+/// `<path>.launcherbak` exists it is restored to `<path>` and the backup is
+/// removed; otherwise the managed file is removed when present. Best effort,
+/// but IO failures that prevent correct restore are logged and returned.
+#[allow(dead_code)]
+pub(crate) fn restore_dfbhd_wrapper_in_install(
+    install_dir: &Path,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    for rel in DFBHD_WRAPPER_MANAGED_FILES {
+        let dest = install_dir.join(rel);
+        let mut bak_os = dest.clone().into_os_string();
+        bak_os.push(".launcherbak");
+        let bak = std::path::PathBuf::from(bak_os);
+
+        if bak.exists() {
+            match std::fs::copy(&bak, &dest) {
+                Ok(_) => push_log(
+                    log,
+                    format!("wrapper restored from backup: '{}'", dest.display()),
+                ),
+                Err(e) => {
+                    let err = format!(
+                        "wrapper restore failed: could not restore '{}' from backup '{}': {}",
+                        dest.display(),
+                        bak.display(),
+                        e
+                    );
+                    push_log(log, err.clone());
+                    return Err(err);
+                }
+            }
+            if let Err(e) = std::fs::remove_file(&bak) {
+                let err = format!(
+                    "wrapper restore failed: could not remove backup '{}': {}",
+                    bak.display(),
+                    e
+                );
+                push_log(log, err.clone());
+                return Err(err);
+            }
+            push_log(
+                log,
+                format!("wrapper backup removed: '{}'", bak.display()),
+            );
+        } else if dest.exists() {
+            match std::fs::remove_file(&dest) {
+                Ok(_) => push_log(
+                    log,
+                    format!(
+                        "wrapper removed: '{}' (no backup present)",
+                        dest.display()
+                    ),
+                ),
+                Err(e) => {
+                    let err = format!(
+                        "wrapper restore failed: could not remove '{}': {}",
+                        dest.display(),
+                        e
+                    );
+                    push_log(log, err.clone());
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    // Remove the managed scripts dir only if it exists and is empty; never
+    // touch a non-empty dir (may hold unrelated user files) or other paths.
+    let scripts_dir = install_dir.join("scripts");
+    if scripts_dir.is_dir() {
+        match std::fs::read_dir(&scripts_dir) {
+            Ok(mut entries) => {
+                if entries.next().is_none() {
+                    if let Err(e) = std::fs::remove_dir(&scripts_dir) {
+                        push_log(
+                            log,
+                            format!(
+                                "wrapper cleanup warning: could not remove empty '{}': {}",
+                                scripts_dir.display(),
+                                e
+                            ),
+                        );
+                    } else {
+                        push_log(
+                            log,
+                            format!(
+                                "wrapper cleanup: removed empty '{}'",
+                                scripts_dir.display()
+                            ),
+                        );
+                    }
+                } else {
+                    push_log(
+                        log,
+                        format!(
+                            "wrapper cleanup: '{}' not empty; left in place",
+                            scripts_dir.display()
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
+                let err = format!(
+                    "wrapper restore failed: could not read '{}': {}",
+                    scripts_dir.display(),
+                    e
+                );
+                push_log(log, err.clone());
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn unlinked_source_label(game_id: &str) -> String {
     match game_id {
         "dfbhd" => "ISO/Install [not linked]".to_string(),
@@ -1299,5 +1417,82 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&install);
         let _ = std::fs::remove_dir_all(&bundle);
+    }
+
+    #[test]
+    fn restore_wrapper_removes_installed_files_when_no_backup() {
+        let install = unique_temp_dir("wrapper-restore-nobak");
+
+        for rel in DFBHD_WRAPPER_MANAGED_FILES {
+            write_file(&install.join(rel), b"WRAPPER");
+        }
+
+        let mut log: Vec<String> = Vec::new();
+        let res = restore_dfbhd_wrapper_in_install(&install, &mut log);
+        assert!(res.is_ok(), "expected restore ok, got {res:?}");
+
+        for rel in DFBHD_WRAPPER_MANAGED_FILES {
+            assert!(
+                !install.join(rel).exists(),
+                "expected removed: {}",
+                install.join(rel).display()
+            );
+        }
+        assert!(
+            !install.join("scripts").exists(),
+            "empty scripts dir should be removed"
+        );
+
+        // Idempotent when nothing installed.
+        let mut log2: Vec<String> = Vec::new();
+        let res2 = restore_dfbhd_wrapper_in_install(&install, &mut log2);
+        assert!(res2.is_ok(), "expected idempotent restore ok, got {res2:?}");
+
+        let _ = std::fs::remove_dir_all(&install);
+    }
+
+    #[test]
+    fn restore_wrapper_restores_launcherbak_and_preserves_unrelated_files() {
+        let install = unique_temp_dir("wrapper-restore-bak");
+
+        // Wrapper content currently at d3d8.dll; user's original saved as bak.
+        write_file(&install.join("d3d8.dll"), b"WRAPPER");
+        write_file(&install.join("d3d8.dll.launcherbak"), b"USER-D3D8");
+        write_file(&install.join("scripts/BHD_Asi.asi"), b"WRAPPER-ASI");
+        write_file(&install.join("scripts/custom.txt"), b"CUSTOM");
+        // Unrelated install content must not be touched.
+        write_file(&install.join("dfbhd.exe"), b"EXE");
+        write_file(&install.join("other.pff"), b"PFF");
+
+        let mut log: Vec<String> = Vec::new();
+        let res = restore_dfbhd_wrapper_in_install(&install, &mut log);
+        assert!(res.is_ok(), "expected restore ok, got {res:?}");
+
+        assert_eq!(
+            std::fs::read(install.join("d3d8.dll")).unwrap(),
+            b"USER-D3D8",
+            "user's d3d8.dll must be restored from launcherbak"
+        );
+        assert!(
+            !install.join("d3d8.dll.launcherbak").exists(),
+            "launcherbak must be removed after restore"
+        );
+
+        assert!(!install.join("scripts/BHD_Asi.asi").exists());
+        assert!(!install.join("scripts/BHD_Asi.ini").exists());
+        assert_eq!(
+            std::fs::read(install.join("scripts/custom.txt")).unwrap(),
+            b"CUSTOM",
+            "unrelated scripts/custom.txt must be preserved"
+        );
+        assert!(
+            install.join("scripts").is_dir(),
+            "non-empty scripts dir must be preserved"
+        );
+
+        assert_eq!(std::fs::read(install.join("dfbhd.exe")).unwrap(), b"EXE");
+        assert_eq!(std::fs::read(install.join("other.pff")).unwrap(), b"PFF");
+
+        let _ = std::fs::remove_dir_all(&install);
     }
 }
