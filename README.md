@@ -1,10 +1,12 @@
-# DFBHD Texture Launcher (Etapa 2 + 3a, in-game HD textures)
+![DFBHD HD Texture Launcher](docs/assets/header.png)
+
+# DFBHD Texture Launcher (Step 2 + 3a, in-game HD textures)
 
 A personal/portfolio native GUI launcher foundation for **Delta Force: Black Hawk Down (DFBHD)** textures and mods, designed as a base that can grow to support multiple games. The visual identity is a **melky.tech-inspired** dark **"secure vault / terminal"** aesthetic.
 
-## Current scope (Etapa 2 + 3a, in-game HD textures)
+## Current scope (Step 2 + 3a, in-game HD textures)
 
-This repository currently delivers the Etapa 1 UI shell plus **Etapa 2 (Option A) link-and-launch** support, **Etapa 3a DFBHD profile apply** for menu textures, and **in-game HD textures** from `resource.pff` (Approach A):
+This repository currently delivers the Step 1 UI shell plus **Step 2 (Option A) link-and-launch** support, **Step 3a DFBHD profile apply** for menu textures, and **in-game HD textures** from `resource.pff` (Approach A):
 
 - Runnable Rust desktop app using `eframe/egui` (`launcher-gui`) with the existing vault/terminal-themed layout (header, navigation, status indicators) and screens: **Dashboard**, **DFBHD**, **Settings**
 - Data-driven game/node registry with DFBHD as the first entry and placeholder slots for future games
@@ -29,11 +31,11 @@ This repository currently delivers the Etapa 1 UI shell plus **Etapa 2 (Option A
 - No generic DXVK/d3d8to9/DSOAL-style wrappers for other games (the bundled DFBHD 1080p widescreen wrapper is separate and documented above)
 - No network access or manifest/download functionality
 
-Future etapas may build on this foundation (e.g. ISO/InstallShield handling, patching/wrapper support, texture pipeline and real profile application, and broader multi-game/manifest architecture).
+Future steps may build on this foundation (e.g. ISO/InstallShield handling, patching/wrapper support, texture pipeline and real profile application, and broader multi-game/manifest architecture).
 
 ## BYOG / local context
 
-This project follows a **bring-your-own-game (BYOG)** intent: you must use your own legally obtained copy of the game. A local retail ISO (`Novalogic_DeltaForceBllackHawkDown.iso`) is present in this workspace as development context only; Etapa 2 does **not** read, mount, extract, or modify it.
+This project follows a **bring-your-own-game (BYOG)** intent: you must use your own legally obtained copy of the game. A local retail ISO (`Novalogic_DeltaForceBllackHawkDown.iso`) is present in this workspace as development context only; Step 2 does **not** read, mount, extract, or modify it.
 
 ## Prerequisites
 
